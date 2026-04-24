@@ -17,22 +17,44 @@ log = get_logger("MT5Trader")
 # ── Connection ────────────────────────────────────────────────────────────────
 
 def connect(login: int, password: str, server: str) -> bool:
-    """Initialise and login to MT5. Returns True on success."""
+    """
+    Initialise MT5 and verify the correct account is active.
+    If MT5 is already running and logged into `login`, we reuse that session.
+    If a password is provided and the account differs, we attempt a fresh login.
+    """
     if not mt5.initialize():
         log.error(f"MT5 initialize() failed: {mt5.last_error()}")
         return False
 
-    if not mt5.login(login, password=password, server=server):
-        log.error(f"MT5 login failed: {mt5.last_error()}")
-        mt5.shutdown()
-        return False
-
     info = mt5.account_info()
-    log.info(
-        f"Connected | Account: {info.login} | "
-        f"Broker: {info.company} | Balance: {info.balance:.2f} {info.currency}"
+
+    # Already on the right account — just reuse the active session
+    if info and info.login == login:
+        log.info(
+            f"Using active MT5 session | Account: {info.login} | "
+            f"Broker: {info.company} | Balance: {info.balance:.2f} {info.currency}"
+        )
+        return True
+
+    # Different account or not logged in — attempt explicit login
+    if password:
+        if not mt5.login(login, password=password, server=server):
+            log.error(f"MT5 login failed: {mt5.last_error()}")
+            mt5.shutdown()
+            return False
+        info = mt5.account_info()
+        log.info(
+            f"Connected | Account: {info.login} | "
+            f"Broker: {info.company} | Balance: {info.balance:.2f} {info.currency}"
+        )
+        return True
+
+    log.error(
+        f"MT5 active account ({info.login if info else 'none'}) != requested ({login}). "
+        "Set MT5_PASSWORD in .env to allow switching accounts."
     )
-    return True
+    mt5.shutdown()
+    return False
 
 
 def disconnect() -> None:
