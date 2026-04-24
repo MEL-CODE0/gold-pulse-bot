@@ -399,7 +399,7 @@ double CalculateLotSize(double slPoints)
       lots = MathFloor(lots / lotStep) * lotStep;
 
    lots = MathMax(MIN_LOT, MathMin(MAX_LOT, lots));
-   return NormaliseDouble(lots, 2);
+   return NormalizeDouble(lots, 2);
 }
 
 //+------------------------------------------------------------------+
