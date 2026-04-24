@@ -33,10 +33,10 @@ def get_credentials() -> tuple[int, str, str]:
     password  = os.getenv("MT5_PASSWORD", "")
     server    = os.getenv("MT5_SERVER", "")
 
-    if not all([login_str, password, server]):
+    if not all([login_str, server]):
         log.error(
             "MT5 credentials missing. "
-            "Copy .env.example to .env and fill in your demo account details."
+            "Copy .env.example to .env and fill in MT5_LOGIN and MT5_SERVER."
         )
         sys.exit(1)
 
