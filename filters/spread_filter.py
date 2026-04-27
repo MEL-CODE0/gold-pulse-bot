@@ -1,7 +1,13 @@
 """
-Spread & volatility filter.
-Blocks trading when spread is abnormally wide (news/low liquidity)
-or when ATR indicates a dead or explosive market.
+Spread & ATR helpers  (Adaptive v5.0)
+======================================
+No hard-coded point values.
+- get_current_spread_points()  → live spread in points
+- get_atr_points()             → smoothed ATR(14,M1) in points
+- is_spread_spike(spread_ema)  → True only when spread is abnormally wide
+
+The bot passes spread and ATR into its own distance calculations.
+There are no fixed min/max ATR filters — those were blocking trading.
 """
 
 import MetaTrader5 as mt5
@@ -14,68 +20,61 @@ log = get_logger("SpreadFilter")
 
 
 def get_current_spread_points() -> float:
-    """Return current bid/ask spread in price points (not pips)."""
+    """Return current bid/ask spread in price points."""
     tick = mt5.symbol_info_tick(config.SYMBOL)
-    if tick is None:
-        return 0.0
     info = mt5.symbol_info(config.SYMBOL)
-    if info is None:
+    if tick is None or info is None or info.point == 0:
         return 0.0
-    spread_price = tick.ask - tick.bid
-    # Convert to points (smallest price increment)
-    point = info.point
-    return round(spread_price / point) if point else 0.0
+    return round((tick.ask - tick.bid) / info.point)
 
 
-def is_spread_ok() -> tuple[bool, float]:
-    """Return (True, spread_pts) if spread is acceptable, (False, spread_pts) if too wide."""
-    if not config.SPREAD_FILTER_ENABLED:
-        return True, 0.0
-
-    spread = get_current_spread_points()
-    ok = spread <= config.MAX_SPREAD_POINTS
-    if not ok:
-        log.info(f"Spread too wide: {spread:.0f} pts (max {config.MAX_SPREAD_POINTS})")
-    return ok, spread
-
-
-def get_atr_points(period: int = 14, timeframe: int = mt5.TIMEFRAME_M1) -> float:
-    """Compute ATR(period) on the given timeframe. Returns value in price points."""
-    bars = mt5.copy_rates_from_pos(config.SYMBOL, timeframe, 0, period + 5)
-    if bars is None or len(bars) < period + 1:
+def get_atr_points(period: int = 14,
+                   timeframe: int = mt5.TIMEFRAME_M1,
+                   smooth: int = 3) -> float:
+    """
+    Compute ATR in price points.
+    Uses average of the last `smooth` ATR values to reduce single-bar spikes.
+    Returns 0.0 if insufficient data.
+    """
+    bars = mt5.copy_rates_from_pos(config.SYMBOL, timeframe, 0, period + smooth + 5)
+    if bars is None or len(bars) < period + smooth:
         return 0.0
 
     df = pd.DataFrame(bars)
     df["prev_close"] = df["close"].shift(1)
-    df["tr"] = df[["high", "low", "prev_close"]].apply(
-        lambda r: max(r["high"] - r["low"],
-                      abs(r["high"] - r["prev_close"]),
-                      abs(r["low"]  - r["prev_close"])),
+    df["tr"] = df.apply(
+        lambda r: max(
+            r["high"] - r["low"],
+            abs(r["high"] - r["prev_close"]) if pd.notna(r["prev_close"]) else 0,
+            abs(r["low"]  - r["prev_close"]) if pd.notna(r["prev_close"]) else 0,
+        ),
         axis=1,
     )
-    atr_price = df["tr"].iloc[-period:].mean()
+
     info = mt5.symbol_info(config.SYMBOL)
     point = info.point if info else 0.00001
-    return atr_price / point
+
+    # Rolling ATR, then average the last `smooth` ATR readings
+    df["atr"] = df["tr"].rolling(period).mean()
+    recent_atr = df["atr"].dropna().iloc[-smooth:]
+    if recent_atr.empty:
+        return 0.0
+
+    return float(recent_atr.mean()) / point
 
 
-def is_volatility_ok() -> tuple[bool, float]:
+def is_spread_spike(spread_ema: float) -> tuple[bool, float]:
     """
-    Return (True, atr_pts) if volatility is in the acceptable band.
-    Too low  → dead market (holiday / after-hours).
-    Too high → news spike (dangerous fills, massive slippage).
+    Return (is_spike, current_spread_pts).
+    A spike is spread > spread_ema × SPREAD_SPIKE_X.
+    Returns (False, spread) during normal conditions.
     """
-    if not config.VOLATILITY_FILTER_ENABLED:
-        return True, 0.0
+    spread = get_current_spread_points()
+    if spread_ema <= 0:
+        return False, spread   # EMA not ready yet — allow trading
 
-    atr = get_atr_points(period=config.TRAIL_ATR_PERIOD)
-
-    if atr < config.ATR_MIN_POINTS:
-        log.info(f"ATR too low: {atr:.0f} pts < {config.ATR_MIN_POINTS} (dead market)")
-        return False, atr
-
-    if atr > config.ATR_MAX_POINTS:
-        log.info(f"ATR too high: {atr:.0f} pts > {config.ATR_MAX_POINTS} (news spike)")
-        return False, atr
-
-    return True, atr
+    spike = spread > spread_ema * config.SPREAD_SPIKE_X
+    if spike:
+        log.info(f"Spread spike: {spread:.0f} pts  (avg={spread_ema:.0f}  "
+                 f"threshold={spread_ema * config.SPREAD_SPIKE_X:.0f})")
+    return spike, spread
