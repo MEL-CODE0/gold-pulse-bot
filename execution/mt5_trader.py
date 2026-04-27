@@ -63,7 +63,7 @@ def _log_symbol_info() -> None:
         f"Symbol info | {config.SYMBOL}  digits={info.digits}  "
         f"point={info.point:.6f}  tick_size={info.trade_tick_size:.6f}  "
         f"tick_value={info.trade_tick_value:.6f}  contract={info.trade_contract_size:.2f}  "
-        f"spread≈{spread:.0f}pts"
+        f"spread~{spread:.0f}pts"
     )
 
 
