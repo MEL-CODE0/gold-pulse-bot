@@ -24,7 +24,7 @@ input double Inp_DailyProfitTarget  = 0.0;    // Daily profit $ target (0 = off)
 
 input group "=== RISK — auto-scales to any account ==="
 input bool   Inp_UseDynamicLots     = true;   // ON = risk % sizing (recommended)
-input double Inp_RiskPct            = 0.5;    // % of balance risked per trade
+input double Inp_RiskPct            = 0.3;    // % of balance risked per trade
 input double Inp_FixedLot           = 0.01;   // Only used if dynamic OFF
 input double Inp_MinLot             = 0.01;
 input double Inp_MaxLot             = 1.00;

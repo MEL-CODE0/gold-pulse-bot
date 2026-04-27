@@ -31,7 +31,7 @@ SPREAD_EMA_ALPHA      = 0.01   # α for exponential moving average of spread
                                 # α=0.01 → ~100-sample smoothing (stable baseline)
 
 # ── Risk management ───────────────────────────────────────────────────────────
-RISK_PCT_PER_TRADE   = 0.005   # 0.5% of account balance per trade (safer for live)
+RISK_PCT_PER_TRADE   = 0.003   # 0.5% of account balance per trade (safer for live)
 MIN_LOT              = 0.01
 MAX_LOT              = 1.00
 LOT_STEP             = 0.01
