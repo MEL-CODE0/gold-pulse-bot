@@ -1,87 +1,73 @@
 //+------------------------------------------------------------------+
 //|                                           Gold Hunter V8.mq5     |
-//|                    Improved Reconstruction — v2.1                 |
-//|              Tuned for Exness Standard Cent (XAUUSDc)             |
-//|                                                                    |
-//|  Improvements over original:                                       |
-//|   - Dynamic lot sizing (% risk per trade)                         |
-//|   - Wider SL + Gap — gives trades room to breathe                 |
-//|   - ATR-based adaptive trailing stop                               |
-//|   - Session filter  (07:00–21:00 UTC)                             |
-//|   - Spread filter   (skip if spread too wide)                     |
-//|   - Volatility filter (ATR min/max guard)                         |
-//|   - Daily loss limit (halt if down X%)                            |
-//|   - Consecutive loss protection (pause after N losses)            |
+//|                    Adaptive v3.0                                  |
+//|                                                                   |
+//|  Fully auto-adapts to any broker, symbol or spread condition.    |
+//|  No hardcoded pip values — everything calculated from live        |
+//|  spread and ATR so it works on Exness, Fusion, or any broker.    |
 //+------------------------------------------------------------------+
-#property copyright "Gold Hunter V8 — Improved v2.1"
-#property version   "2.10"
+#property copyright "Gold Hunter V8 — Adaptive v3.0"
+#property version   "3.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
 //════════════════════════════════════════════════════════════════════
-//  INPUT GROUPS
+//  INPUTS
 //════════════════════════════════════════════════════════════════════
 
-//── Original settings ────────────────────────────────────────────────
-input group "=== ORIGINAL SETTINGS ==="
-input long   Inp_MagicNumber        = 5555;    // Magic Number
-input int    Inp_GapPips            = 80;      // Gap: entry distance from mid (pts)
-input int    Inp_StopLossPips       = 200;     // Stop Loss distance (pts)
-input int    Inp_TrailAfterPips     = 80;      // Start trailing after X pts profit
-input int    Inp_TrailStepPips      = 50;      // Trail step distance (pts)
-input bool   Inp_UseTrailingStop    = true;    // Use trailing stop
-input double Inp_DailyProfitTarget  = 0.0;    // Daily Profit Target $ (0 = disabled)
+input group "=== TRADE SETTINGS ==="
+input long   Inp_MagicNumber        = 5555;   // Magic Number
+input bool   Inp_UseTrailingStop    = true;   // Use trailing stop
+input double Inp_DailyProfitTarget  = 0.0;   // Daily profit target $ (0=off)
 
-//── Risk management ──────────────────────────────────────────────────
 input group "=== RISK MANAGEMENT ==="
-input bool   Inp_UseDynamicLots     = false;   // Dynamic lot sizing (% risk)
-input double Inp_RiskPct            = 1.0;     // Risk % per trade (if dynamic)
-input double Inp_FixedLotSize       = 0.01;    // Fixed lot (if dynamic OFF)
-input double Inp_MinLot             = 0.01;    // Minimum lot size
-input double Inp_MaxLot             = 1.00;    // Maximum lot size
-input double Inp_MaxDailyLossPct    = 2.0;     // Daily loss limit % (0 = disabled)
+input bool   Inp_UseDynamicLots     = false;  // true=% risk | false=fixed lot
+input double Inp_RiskPct            = 1.0;    // Risk % per trade (dynamic mode)
+input double Inp_FixedLot           = 0.01;   // Fixed lot size (fixed mode)
+input double Inp_MinLot             = 0.01;   // Minimum lot
+input double Inp_MaxLot             = 1.00;   // Maximum lot
+input double Inp_MaxDailyLossPct    = 2.0;    // Halt if day loss > X% (0=off)
 
-//── Session filter ───────────────────────────────────────────────────
+input group "=== AUTO-ADAPTIVE MULTIPLIERS ==="
+// These work on ANY broker — values are relative to live spread & ATR
+input double Inp_SL_SpreadMult      = 2.5;   // SL = max(spread×this, ATR×SL_AtrMult)
+input double Inp_SL_AtrMult         = 0.5;   // SL = max(spread×SL_SpreadMult, ATR×this)
+input double Inp_Gap_SpreadMult     = 1.5;   // Gap from mid = spread × this
+input double Inp_Trail_AtrMult      = 0.35;  // Trail step = ATR × this
+input double Inp_Trail_TrigMult     = 1.0;   // Trail trigger = spread × this
+input double Inp_MaxSpreadMult      = 3.0;   // Skip if spread > avg_spread × this
+
 input group "=== SESSION FILTER ==="
-input bool   Inp_SessionFilter      = true;    // Enable session filter
-input int    Inp_SessionStartUTC    = 7;       // Session start (UTC hour)
-input int    Inp_SessionEndUTC      = 21;      // Session end   (UTC hour)
+input bool   Inp_SessionFilter      = true;  // Enable session hours filter
+input int    Inp_SessionStartUTC    = 7;     // Session open  (UTC hour)
+input int    Inp_SessionEndUTC      = 21;    // Session close (UTC hour)
 
-//── Spread filter ────────────────────────────────────────────────────
-input group "=== SPREAD FILTER ==="
-input bool   Inp_SpreadFilter       = true;    // Enable spread filter
-input int    Inp_MaxSpreadPips      = 350;     // Max allowed spread (pts) — XAUUSDc digits=3 normal ~280
-
-//── Volatility filter (ATR) ──────────────────────────────────────────
-input group "=== VOLATILITY FILTER ==="
-input bool   Inp_VolatilityFilter   = true;    // Enable ATR volatility filter
-input int    Inp_AtrPeriod          = 14;      // ATR period (M1 bars)
-input int    Inp_AtrMinPips         = 150;     // Min ATR — skip dead market (XAUUSDc digits=3)
-input int    Inp_AtrMaxPips         = 5000;    // Max ATR — skip news spike  (XAUUSDc digits=3)
-
-//── Consecutive loss protection ──────────────────────────────────────
 input group "=== LOSS PROTECTION ==="
-input int    Inp_ConsecLossLimit    = 5;       // Pause after N consecutive losses
-input int    Inp_ConsecLossPauseMin = 60;      // Pause duration (minutes)
+input int    Inp_ConsecLossLimit    = 5;     // Pause after N consecutive losses
+input int    Inp_ConsecLossPauseMin = 60;    // Pause duration (minutes)
 
 //════════════════════════════════════════════════════════════════════
 //  GLOBALS
 //════════════════════════════════════════════════════════════════════
 CTrade   trade;
-int      atrHandle        = INVALID_HANDLE;
+int      atrHandle      = INVALID_HANDLE;
 
-datetime lastPlaceTime    = 0;
-datetime lastTrailTime    = 0;
-double   dayStartBalance  = 0;
-datetime currentDayBar    = 0;
-bool     dailyTargetHit   = false;
-bool     dailyLossHit     = false;
+// Spread EMA — auto-learns the broker's normal spread over time
+double   spreadEma      = 0;
+bool     spreadEmaReady = false;
 
-int      consecLosses     = 0;
-datetime pauseUntil       = 0;
-ulong    lastPosTicket    = 0;
+datetime lastPlaceTime  = 0;
+datetime lastTrailTime  = 0;
+double   dayStartBal    = 0;
+datetime currentDayBar  = 0;
+bool     dailyTargetHit = false;
+bool     dailyLossHit   = false;
+
+int      consecLosses   = 0;
+datetime pauseUntil     = 0;
+ulong    lastPosTkt     = 0;
 
 //════════════════════════════════════════════════════════════════════
 //  INIT / DEINIT
@@ -89,29 +75,36 @@ ulong    lastPosTicket    = 0;
 int OnInit()
 {
    trade.SetExpertMagicNumber(Inp_MagicNumber);
-   trade.SetDeviationInPoints(20);
-   trade.SetTypeFilling(ORDER_FILLING_FOK);   // Exness requires FOK
+   trade.SetDeviationInPoints(30);
+   trade.SetTypeFilling(ORDER_FILLING_FOK);
 
-   atrHandle = iATR(_Symbol, PERIOD_M1, Inp_AtrPeriod);
+   atrHandle = iATR(_Symbol, PERIOD_M1, 14);
    if(atrHandle == INVALID_HANDLE)
    {
       Print("ERROR: Cannot create ATR indicator");
       return INIT_FAILED;
    }
 
-   dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-   currentDayBar   = iTime(_Symbol, PERIOD_D1, 0);
+   dayStartBal   = AccountInfoDouble(ACCOUNT_BALANCE);
+   currentDayBar = iTime(_Symbol, PERIOD_D1, 0);
 
-   PrintFormat("Gold Hunter V8 v2.0 | Balance=%.2f | Magic=%I64d | Risk=%.1f%%",
-               dayStartBalance, Inp_MagicNumber, Inp_RiskPct);
+   // Seed spread EMA with current spread
+   spreadEma     = GetSpreadPoints();
+   spreadEmaReady = true;
+
+   PrintFormat("Gold Hunter V8 Adaptive v3.0 | Balance=%.2f | Magic=%I64d",
+               dayStartBal, Inp_MagicNumber);
+   PrintFormat("Symbol: %s | Digits: %d | Point: %.5f",
+               _Symbol,
+               (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS),
+               SymbolInfoDouble(_Symbol, SYMBOL_POINT));
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason)
 {
-   if(atrHandle != INVALID_HANDLE)
-      IndicatorRelease(atrHandle);
-   Print("Gold Hunter V8 v2.0 stopped");
+   if(atrHandle != INVALID_HANDLE) IndicatorRelease(atrHandle);
+   Print("Gold Hunter V8 Adaptive v3.0 stopped");
 }
 
 //════════════════════════════════════════════════════════════════════
@@ -119,41 +112,43 @@ void OnDeinit(const int reason)
 //════════════════════════════════════════════════════════════════════
 void OnTick()
 {
+   // Update spread EMA every tick (slow EMA — adapts over ~20 min)
+   UpdateSpreadEma();
+
    //── Daily bar reset ──────────────────────────────────────────────
    datetime todayBar = iTime(_Symbol, PERIOD_D1, 0);
    if(todayBar != currentDayBar)
    {
-      dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-      currentDayBar   = todayBar;
-      dailyTargetHit  = false;
-      dailyLossHit    = false;
-      consecLosses    = 0;
-      pauseUntil      = 0;
-      PrintFormat("New day | Balance reset to %.2f", dayStartBalance);
+      dayStartBal    = AccountInfoDouble(ACCOUNT_BALANCE);
+      currentDayBar  = todayBar;
+      dailyTargetHit = false;
+      dailyLossHit   = false;
+      consecLosses   = 0;
+      pauseUntil     = 0;
+      PrintFormat("New day | Balance reset to %.2f", dayStartBal);
    }
 
    //── Daily profit target ──────────────────────────────────────────
    if(!dailyTargetHit && Inp_DailyProfitTarget > 0)
    {
-      double floatingPnL = AccountInfoDouble(ACCOUNT_EQUITY) - dayStartBalance;
-      if(floatingPnL >= Inp_DailyProfitTarget)
+      if(AccountInfoDouble(ACCOUNT_EQUITY) - dayStartBal >= Inp_DailyProfitTarget)
       {
-         PrintFormat("Daily profit target hit: +%.2f — closing all", floatingPnL);
+         Print("Daily profit target hit — closing all");
          CloseAllPositions();
          CancelAllPending();
          dailyTargetHit = true;
+         return;
       }
    }
 
    //── Daily loss limit ─────────────────────────────────────────────
    if(!dailyLossHit && Inp_MaxDailyLossPct > 0)
    {
-      double dayLoss   = dayStartBalance - AccountInfoDouble(ACCOUNT_BALANCE);
-      double maxLoss   = dayStartBalance * Inp_MaxDailyLossPct / 100.0;
-      if(dayLoss >= maxLoss)
+      double loss    = dayStartBal - AccountInfoDouble(ACCOUNT_BALANCE);
+      double maxLoss = dayStartBal * Inp_MaxDailyLossPct / 100.0;
+      if(loss >= maxLoss)
       {
-         PrintFormat("Daily loss limit hit: -%.2f (%.1f%%) — halting today",
-                     dayLoss, Inp_MaxDailyLossPct);
+         PrintFormat("Daily loss limit hit: -%.2f — halting today", loss);
          CancelAllPending();
          dailyLossHit = true;
       }
@@ -168,7 +163,7 @@ void OnTick()
       lastTrailTime = TimeCurrent();
    }
 
-   //── Detect closed positions ──────────────────────────────────────
+   //── Detect closed position ───────────────────────────────────────
    CheckForClosedPosition();
 
    //── New order cycle (every 60 sec) ───────────────────────────────
@@ -180,19 +175,19 @@ void OnTick()
 }
 
 //════════════════════════════════════════════════════════════════════
-//  ORDER CYCLE — all filters then place bracket
+//  ORDER CYCLE
 //════════════════════════════════════════════════════════════════════
 void OrderCycle()
 {
    //1. Consecutive loss pause
    if(pauseUntil > 0 && TimeCurrent() < pauseUntil)
    {
-      int mins = (int)((pauseUntil - TimeCurrent()) / 60);
-      PrintFormat("Consecutive loss pause — %d min remaining", mins);
+      PrintFormat("Loss pause — %d min remaining",
+                  (int)((pauseUntil - TimeCurrent()) / 60));
       return;
    }
 
-   //2. Skip if position already open
+   //2. Skip if position open
    if(HasOpenPosition()) return;
 
    //3. Session filter
@@ -202,31 +197,23 @@ void OrderCycle()
       return;
    }
 
-   //4. Spread filter
+   //4. Auto spread filter — skip if spread is abnormally wide
    double spreadPts = GetSpreadPoints();
-   if(Inp_SpreadFilter && spreadPts > Inp_MaxSpreadPips)
+   double maxAllowed = spreadEma * Inp_MaxSpreadMult;
+   if(spreadPts > maxAllowed)
    {
-      PrintFormat("Spread too wide: %.0f pts — skipping", spreadPts);
+      PrintFormat("Spread spike: %.0f pts (avg=%.0f, max=%.0f) — skipping",
+                  spreadPts, spreadEma, maxAllowed);
       CancelAllPending();
       return;
    }
 
-   //5. Volatility filter (ATR)
+   //5. Volatility check — need some movement to trade
    double atrPts = GetAtrPoints();
-   if(Inp_VolatilityFilter)
+   if(atrPts < 1)   // fallback guard only
    {
-      if(atrPts < Inp_AtrMinPips)
-      {
-         PrintFormat("ATR too low: %.0f pts — market dead, skipping", atrPts);
-         CancelAllPending();
-         return;
-      }
-      if(atrPts > Inp_AtrMaxPips)
-      {
-         PrintFormat("ATR too high: %.0f pts — news spike, skipping", atrPts);
-         CancelAllPending();
-         return;
-      }
+      Print("ATR near zero — skipping");
+      return;
    }
 
    //6. Place bracket
@@ -234,53 +221,63 @@ void OrderCycle()
 }
 
 //════════════════════════════════════════════════════════════════════
-//  PLACE BRACKET
+//  PLACE BRACKET — all distances auto-calculated
 //════════════════════════════════════════════════════════════════════
 void PlaceBracket(double spreadPts, double atrPts)
 {
    CancelAllPending();
 
-   double point    = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double bid      = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask      = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double mid      = (bid + ask) / 2.0;
-   int    digits   = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double mid    = (bid + ask) / 2.0;
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
 
-   double gapDist  = Inp_GapPips      * point;
-   double slDist   = Inp_StopLossPips * point;
+   // SL: larger of (spread × mult) or (ATR × mult) — always safe
+   double slPts  = MathMax(spreadPts * Inp_SL_SpreadMult,
+                           atrPts    * Inp_SL_AtrMult);
+
+   // Gap: proportional to spread so entry is reachable but above noise
+   double gapPts = spreadPts * Inp_Gap_SpreadMult;
+
+   double slDist  = slPts  * point;
+   double gapDist = gapPts * point;
 
    double buyEntry  = NormalizeDouble(mid + gapDist, digits);
    double buySL     = NormalizeDouble(buyEntry - slDist, digits);
    double sellEntry = NormalizeDouble(mid - gapDist, digits);
    double sellSL    = NormalizeDouble(sellEntry + slDist, digits);
 
-   double lots = CalculateLots(Inp_StopLossPips);
+   double lots = CalculateLots(slPts);
 
-   PrintFormat("Bracket | mid=%.2f  gap=%d pts  SL=%d pts  ATR=%.0f pts  spread=%.0f pts  lots=%.2f",
-               mid, Inp_GapPips, Inp_StopLossPips, atrPts, spreadPts, lots);
+   PrintFormat("Bracket | spread=%.0f avg=%.0f | gap=%.0f sl=%.0f atr=%.0f | lots=%.2f",
+               spreadPts, spreadEma, gapPts, slPts, atrPts, lots);
 
-   if(!trade.BuyStop(lots, buyEntry, _Symbol, buySL, 0, ORDER_TIME_GTC, 0, "GH-BUY"))
-      PrintFormat("BuyStop failed | %.2f sl=%.2f err=%d", buyEntry, buySL, GetLastError());
+   if(!trade.BuyStop(lots, buyEntry, _Symbol, buySL, 0,
+                     ORDER_TIME_GTC, 0, "GH-BUY"))
+      PrintFormat("BuyStop failed | %.5f sl=%.5f err=%d", buyEntry, buySL, GetLastError());
 
-   if(!trade.SellStop(lots, sellEntry, _Symbol, sellSL, 0, ORDER_TIME_GTC, 0, "GH-SELL"))
-      PrintFormat("SellStop failed | %.2f sl=%.2f err=%d", sellEntry, sellSL, GetLastError());
+   if(!trade.SellStop(lots, sellEntry, _Symbol, sellSL, 0,
+                      ORDER_TIME_GTC, 0, "GH-SELL"))
+      PrintFormat("SellStop failed | %.5f sl=%.5f err=%d", sellEntry, sellSL, GetLastError());
 }
 
 //════════════════════════════════════════════════════════════════════
-//  TRAILING STOP
+//  TRAILING STOP — ATR-based, adapts to volatility
 //════════════════════════════════════════════════════════════════════
 void ManageTrailing()
 {
-   double point      = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double bid        = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask        = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   int    digits     = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double atrPts     = GetAtrPoints();
+   double point    = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double bid      = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask      = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   int    digits   = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double atrPts   = GetAtrPoints();
+   double spreadPts = GetSpreadPoints();
 
-   // Trail step: larger of fixed step or ATR-based step
-   double trailStep  = MathMax(Inp_TrailStepPips * point,
-                               atrPts * point * 0.4);
-   double triggerDist = Inp_TrailAfterPips * point;
+   // Trail step adapts to current volatility
+   double trailStep    = atrPts    * Inp_Trail_AtrMult  * point;
+   // Trail starts when profit >= spread (trade has cleared the spread cost)
+   double trailTrigger = spreadPts * Inp_Trail_TrigMult * point;
 
    for(int i = 0; i < PositionsTotal(); i++)
    {
@@ -296,53 +293,47 @@ void ManageTrailing()
 
       if(posType == POSITION_TYPE_BUY)
       {
-         double profit = bid - openPrice;
-         if(profit < triggerDist) continue;        // wait for enough profit first
-
+         if(bid - openPrice < trailTrigger) continue;
          double idealSL = NormalizeDouble(bid - trailStep, digits);
-         if(idealSL > currentSL + point)           // only ratchet UP
+         if(idealSL > currentSL + point)
          {
             trade.PositionModify(ticket, idealSL, 0);
-            PrintFormat("Trail BUY  #%I64u | sl: %.2f → %.2f", ticket, currentSL, idealSL);
+            PrintFormat("Trail BUY  #%I64u | sl %.5f → %.5f", ticket, currentSL, idealSL);
          }
       }
       else if(posType == POSITION_TYPE_SELL)
       {
-         double profit = openPrice - ask;
-         if(profit < triggerDist) continue;
-
+         if(openPrice - ask < trailTrigger) continue;
          double idealSL = NormalizeDouble(ask + trailStep, digits);
-         if(idealSL < currentSL - point)           // only ratchet DOWN
+         if(idealSL < currentSL - point)
          {
             trade.PositionModify(ticket, idealSL, 0);
-            PrintFormat("Trail SELL #%I64u | sl: %.2f → %.2f", ticket, currentSL, idealSL);
+            PrintFormat("Trail SELL #%I64u | sl %.5f → %.5f", ticket, currentSL, idealSL);
          }
       }
    }
 }
 
 //════════════════════════════════════════════════════════════════════
-//  DETECT CLOSED POSITION → update consecutive loss counter
+//  CLOSED POSITION DETECTION
 //════════════════════════════════════════════════════════════════════
 void CheckForClosedPosition()
 {
    bool posOpen = HasOpenPosition();
 
-   if(!posOpen && lastPosTicket != 0)
+   if(!posOpen && lastPosTkt != 0)
    {
-      // Position just closed — look up result in history
       HistorySelect(TimeCurrent() - 600, TimeCurrent());
-
       for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
       {
-         ulong dTicket = HistoryDealGetTicket(i);
-         if(dTicket == 0) continue;
-         if(HistoryDealGetInteger(dTicket, DEAL_POSITION_ID) != (long)lastPosTicket) continue;
-         if(HistoryDealGetInteger(dTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+         ulong dTkt = HistoryDealGetTicket(i);
+         if(dTkt == 0) continue;
+         if(HistoryDealGetInteger(dTkt, DEAL_POSITION_ID) != (long)lastPosTkt) continue;
+         if(HistoryDealGetInteger(dTkt, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
 
-         double pnl = HistoryDealGetDouble(dTicket, DEAL_PROFIT)
-                    + HistoryDealGetDouble(dTicket, DEAL_SWAP)
-                    + HistoryDealGetDouble(dTicket, DEAL_COMMISSION);
+         double pnl = HistoryDealGetDouble(dTkt, DEAL_PROFIT)
+                    + HistoryDealGetDouble(dTkt, DEAL_SWAP)
+                    + HistoryDealGetDouble(dTkt, DEAL_COMMISSION);
 
          if(pnl < 0)
          {
@@ -351,7 +342,7 @@ void CheckForClosedPosition()
             if(consecLosses >= Inp_ConsecLossLimit)
             {
                pauseUntil = TimeCurrent() + Inp_ConsecLossPauseMin * 60;
-               PrintFormat("PAUSE: %d losses in a row — pausing %d min",
+               PrintFormat("PAUSE: %d losses — pausing %d min",
                            consecLosses, Inp_ConsecLossPauseMin);
             }
          }
@@ -361,17 +352,13 @@ void CheckForClosedPosition()
                PrintFormat("Win after %d losses — counter reset", consecLosses);
             consecLosses = 0;
          }
-
-         PrintFormat("Trade closed | #%I64u  P&L=%.2f  streak=%d",
-                     lastPosTicket, pnl, consecLosses);
+         PrintFormat("Trade closed | #%I64u  P&L=%.2f", lastPosTkt, pnl);
          break;
       }
-
-      lastPosTicket = 0;
+      lastPosTkt = 0;
    }
 
-   // Track currently open position ticket
-   if(posOpen && lastPosTicket == 0)
+   if(posOpen && lastPosTkt == 0)
    {
       for(int i = 0; i < PositionsTotal(); i++)
       {
@@ -379,13 +366,14 @@ void CheckForClosedPosition()
          if(ticket == 0) continue;
          if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
          if(PositionGetInteger(POSITION_MAGIC)  != Inp_MagicNumber) continue;
-         lastPosTicket = ticket;
-         CancelAllPending();   // cancel opposite pending on fill
-         PrintFormat("Position filled | #%I64u  %s  %.2f lots @ %.2f",
+         lastPosTkt = ticket;
+         CancelAllPending();
+         PrintFormat("Fill | #%I64u  %s  %.2f lots @ %.5f  SL=%.5f",
                      ticket,
-                     PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY ? "BUY":"SELL",
+                     PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?"BUY":"SELL",
                      PositionGetDouble(POSITION_VOLUME),
-                     PositionGetDouble(POSITION_PRICE_OPEN));
+                     PositionGetDouble(POSITION_PRICE_OPEN),
+                     PositionGetDouble(POSITION_SL));
          break;
       }
    }
@@ -395,32 +383,58 @@ void CheckForClosedPosition()
 //  HELPERS
 //════════════════════════════════════════════════════════════════════
 
-//── Lot sizing ───────────────────────────────────────────────────────
-double CalculateLots(int slPoints)
+// Slow EMA of spread — learns broker's normal spread automatically
+void UpdateSpreadEma()
 {
-   if(!Inp_UseDynamicLots) return Inp_FixedLotSize;
+   double s = GetSpreadPoints();
+   if(!spreadEmaReady) { spreadEma = s; spreadEmaReady = true; return; }
+   spreadEma = spreadEma * 0.98 + s * 0.02;  // ~50-tick EMA
+}
 
-   double balance       = AccountInfoDouble(ACCOUNT_BALANCE);
-   double riskCash      = balance * Inp_RiskPct / 100.0;
-   double point         = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double tickValue     = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize      = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+// Current spread in points
+double GetSpreadPoints()
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0) return 1;
+   return (SymbolInfoDouble(_Symbol, SYMBOL_ASK) -
+           SymbolInfoDouble(_Symbol, SYMBOL_BID)) / point;
+}
 
-   if(tickValue <= 0 || tickSize <= 0 || slPoints <= 0)
-      return Inp_MinLot;
+// ATR in points (M1, period 14)
+double GetAtrPoints()
+{
+   double buf[];
+   ArraySetAsSeries(buf, true);
+   if(CopyBuffer(atrHandle, 0, 0, 1, buf) < 1) return GetSpreadPoints() * 2;
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0) return 1;
+   return buf[0] / point;
+}
+
+// Risk-based or fixed lot sizing
+double CalculateLots(double slPoints)
+{
+   if(!Inp_UseDynamicLots) return Inp_FixedLot;
+
+   double balance      = AccountInfoDouble(ACCOUNT_BALANCE);
+   double riskCash     = balance * Inp_RiskPct / 100.0;
+   double point        = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double tickValue    = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize     = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+
+   if(tickValue <= 0 || tickSize <= 0 || slPoints <= 0) return Inp_MinLot;
 
    double slValuePerLot = (slPoints * point / tickSize) * tickValue;
    if(slValuePerLot <= 0) return Inp_MinLot;
 
-   double lots = riskCash / slValuePerLot;
-
+   double lots    = riskCash / slValuePerLot;
    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(lotStep > 0) lots = MathFloor(lots / lotStep) * lotStep;
 
    return NormalizeDouble(MathMax(Inp_MinLot, MathMin(Inp_MaxLot, lots)), 2);
 }
 
-//── Session filter ───────────────────────────────────────────────────
+// Session filter
 bool IsSessionActive()
 {
    MqlDateTime dt;
@@ -428,27 +442,7 @@ bool IsSessionActive()
    return (dt.hour >= Inp_SessionStartUTC && dt.hour < Inp_SessionEndUTC);
 }
 
-//── Spread in points ─────────────────────────────────────────────────
-double GetSpreadPoints()
-{
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   if(point <= 0) return 0;
-   return (SymbolInfoDouble(_Symbol, SYMBOL_ASK) -
-           SymbolInfoDouble(_Symbol, SYMBOL_BID)) / point;
-}
-
-//── ATR in points ────────────────────────────────────────────────────
-double GetAtrPoints()
-{
-   double buf[];
-   ArraySetAsSeries(buf, true);
-   if(CopyBuffer(atrHandle, 0, 0, 1, buf) < 1) return Inp_AtrMinPips;
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   if(point <= 0) return Inp_AtrMinPips;
-   return buf[0] / point;
-}
-
-//── Cancel all pending orders ────────────────────────────────────────
+// Cancel all pending orders
 void CancelAllPending()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -463,7 +457,7 @@ void CancelAllPending()
    }
 }
 
-//── Close all positions ──────────────────────────────────────────────
+// Close all positions
 void CloseAllPositions()
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -476,7 +470,7 @@ void CloseAllPositions()
    }
 }
 
-//── Has open position ────────────────────────────────────────────────
+// Has open position
 bool HasOpenPosition()
 {
    for(int i = 0; i < PositionsTotal(); i++)
