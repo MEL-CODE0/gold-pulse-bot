@@ -27,8 +27,8 @@
 //── Original settings ────────────────────────────────────────────────
 input group "=== ORIGINAL SETTINGS ==="
 input long   Inp_MagicNumber        = 5555;    // Magic Number
-input int    Inp_GapPips            = 100;     // Gap: entry distance from mid (pts)
-input int    Inp_StopLossPips       = 150;     // Stop Loss distance (pts)
+input int    Inp_GapPips            = 80;      // Gap: entry distance from mid (pts)
+input int    Inp_StopLossPips       = 200;     // Stop Loss distance (pts)
 input int    Inp_TrailAfterPips     = 80;      // Start trailing after X pts profit
 input int    Inp_TrailStepPips      = 50;      // Trail step distance (pts)
 input bool   Inp_UseTrailingStop    = true;    // Use trailing stop
@@ -36,9 +36,9 @@ input double Inp_DailyProfitTarget  = 0.0;    // Daily Profit Target $ (0 = disa
 
 //── Risk management ──────────────────────────────────────────────────
 input group "=== RISK MANAGEMENT ==="
-input bool   Inp_UseDynamicLots     = true;    // Dynamic lot sizing (% risk)
+input bool   Inp_UseDynamicLots     = false;   // Dynamic lot sizing (% risk)
 input double Inp_RiskPct            = 1.0;     // Risk % per trade (if dynamic)
-input double Inp_FixedLotSize       = 0.02;    // Fixed lot (if dynamic OFF)
+input double Inp_FixedLotSize       = 0.01;    // Fixed lot (if dynamic OFF)
 input double Inp_MinLot             = 0.01;    // Minimum lot size
 input double Inp_MaxLot             = 1.00;    // Maximum lot size
 input double Inp_MaxDailyLossPct    = 2.0;     // Daily loss limit % (0 = disabled)
@@ -52,14 +52,14 @@ input int    Inp_SessionEndUTC      = 21;      // Session end   (UTC hour)
 //── Spread filter ────────────────────────────────────────────────────
 input group "=== SPREAD FILTER ==="
 input bool   Inp_SpreadFilter       = true;    // Enable spread filter
-input int    Inp_MaxSpreadPips      = 40;      // Max allowed spread (pts) — Exness cent ~0.3-1.0
+input int    Inp_MaxSpreadPips      = 350;     // Max allowed spread (pts) — XAUUSDc digits=3 normal ~280
 
 //── Volatility filter (ATR) ──────────────────────────────────────────
 input group "=== VOLATILITY FILTER ==="
 input bool   Inp_VolatilityFilter   = true;    // Enable ATR volatility filter
 input int    Inp_AtrPeriod          = 14;      // ATR period (M1 bars)
-input int    Inp_AtrMinPips         = 15;      // Min ATR — skip dead market (pts)
-input int    Inp_AtrMaxPips         = 500;     // Max ATR — skip news spike (pts)
+input int    Inp_AtrMinPips         = 150;     // Min ATR — skip dead market (XAUUSDc digits=3)
+input int    Inp_AtrMaxPips         = 5000;    // Max ATR — skip news spike  (XAUUSDc digits=3)
 
 //── Consecutive loss protection ──────────────────────────────────────
 input group "=== LOSS PROTECTION ==="
