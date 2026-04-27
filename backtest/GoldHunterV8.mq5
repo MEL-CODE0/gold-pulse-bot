@@ -1,6 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                           Gold Hunter V8.mq5     |
-//|                    Improved Reconstruction — v2.0                 |
+//|                    Improved Reconstruction — v2.1                 |
+//|              Tuned for Exness Standard Cent (XAUUSDc)             |
 //|                                                                    |
 //|  Improvements over original:                                       |
 //|   - Dynamic lot sizing (% risk per trade)                         |
@@ -12,8 +13,8 @@
 //|   - Daily loss limit (halt if down X%)                            |
 //|   - Consecutive loss protection (pause after N losses)            |
 //+------------------------------------------------------------------+
-#property copyright "Gold Hunter V8 — Improved v2.0"
-#property version   "2.00"
+#property copyright "Gold Hunter V8 — Improved v2.1"
+#property version   "2.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -51,7 +52,7 @@ input int    Inp_SessionEndUTC      = 21;      // Session end   (UTC hour)
 //── Spread filter ────────────────────────────────────────────────────
 input group "=== SPREAD FILTER ==="
 input bool   Inp_SpreadFilter       = true;    // Enable spread filter
-input int    Inp_MaxSpreadPips      = 25;      // Max allowed spread (pts)
+input int    Inp_MaxSpreadPips      = 40;      // Max allowed spread (pts) — Exness cent ~0.3-1.0
 
 //── Volatility filter (ATR) ──────────────────────────────────────────
 input group "=== VOLATILITY FILTER ==="
@@ -89,7 +90,7 @@ int OnInit()
 {
    trade.SetExpertMagicNumber(Inp_MagicNumber);
    trade.SetDeviationInPoints(20);
-   trade.SetTypeFilling(ORDER_FILLING_IOC);
+   trade.SetTypeFilling(ORDER_FILLING_FOK);   // Exness requires FOK
 
    atrHandle = iATR(_Symbol, PERIOD_M1, Inp_AtrPeriod);
    if(atrHandle == INVALID_HANDLE)
